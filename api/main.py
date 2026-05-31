@@ -149,9 +149,10 @@ async def lifespan(app: FastAPI):
     yield
 
 app = FastAPI(title="Stocks Scanner API", version="1.0.0", lifespan=lifespan)
-templates = Jinja2Templates(directory=os.path.join(os.path.dirname(__file__), "templates"))
+templates_dir = os.path.join(_project_root, "api", "templates")
+templates = Jinja2Templates(directory=templates_dir)
 
-STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
+STATIC_DIR = os.path.join(_project_root, "api", "static")
 if os.path.exists(STATIC_DIR):
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
