@@ -74,6 +74,7 @@ SIGNAL_LABELS = {
     "bajo_sma200": "Precio < SMA200",
     "rsi_optimo": "RSI < 45 (room to run)",
     "rsi_sobrecomprado": "RSI > 65 (sobrecomprado)",
+    "rsi_sobrecomprado_bull": "RSI > 75 (sobrecompra extrema)",
     "macd_bullish": "MACD alcista",
     "macd_bearish": "MACD bajista",
     "golden_cross": "Golden cross",
@@ -428,6 +429,9 @@ def analizar_senales_alcistas(datos):
     if rsi is not None and rsi < 45:
         puntos += SIGNAL_WEIGHTS["rsi_optimo"]
         senales.append("rsi_optimo")
+    elif rsi is not None and rsi > 75:
+        puntos -= 3  # penaliza sobrecompra extrema
+        senales.append("rsi_sobrecomprado_bull")
 
     if datos.get("macd_bullish"):
         puntos += SIGNAL_WEIGHTS["macd_bullish"]
@@ -549,9 +553,9 @@ def estimar_score(datos):
         elif rsi < 55:
             score += 0.5
         elif rsi > 65:
-            score -= 1.0
+            score -= 2.0
         if rsi > 75:
-            score -= 1.0
+            score -= 2.0
 
     if datos.get("macd_bullish"):
         score += 1.0
@@ -588,7 +592,7 @@ def clasificar_candidato(datos):
             "puntos": puntos_alcista,
             "max_posible": MAX_BULLISH_SCORE,
             "senales": senales_alcista,
-            "senales_labels": [SIGNAL_LABELS[s] for s in senales_alcista],
+            "senales_labels": [SIGNAL_LABELS.get(s, s) for s in senales_alcista],
         }
     elif puntos_bajista > puntos_alcista and puntos_bajista >= MIN_BEARISH_THRESHOLD:
         nivel = "FUERTE" if puntos_bajista >= STRONG_THRESHOLD else "BAJISTA"
@@ -598,7 +602,7 @@ def clasificar_candidato(datos):
             "puntos": puntos_bajista,
             "max_posible": MAX_BEARISH_SCORE,
             "senales": senales_bajista,
-            "senales_labels": [SIGNAL_LABELS[s] for s in senales_bajista],
+            "senales_labels": [SIGNAL_LABELS.get(s, s) for s in senales_bajista],
         }
 
     return None
