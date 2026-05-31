@@ -5,7 +5,7 @@ services:
     build: .
     container_name: stocks-scanner
     ports:
-      - "8080:8080"
+      - "8030:8080"
     volumes:
       - ./data:/app/data
       - ./logs:/app/logs
