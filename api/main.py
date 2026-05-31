@@ -174,8 +174,7 @@ async def dashboard(request: Request):
 
     chart_data = _build_chart_data()
 
-    return templates.TemplateResponse("index.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "index.html", {
         "alcistas": alcistas,
         "bajistas": bajistas,
         "reporte_actual": reporte_actual,
@@ -195,8 +194,7 @@ async def scan_detail(request: Request, fecha: str):
             "<a href='/' class='text-sm underline mt-4 inline-block'>Volver</a></div>",
             status_code=404,
         )
-    return templates.TemplateResponse("scan_detail.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "scan_detail.html", {
         "fecha": fecha,
         "reporte": reporte,
     })
@@ -217,8 +215,7 @@ async def ticker_detail(request: Request, symbol: str):
         elif bajista_count > alcista_count:
             tendencia = "bajista"
 
-    return templates.TemplateResponse("ticker.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "ticker.html", {
         "ticker": ticker,
         "name": name,
         "entries": entries,
