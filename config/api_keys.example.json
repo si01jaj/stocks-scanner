@@ -1,0 +1,15 @@
+{
+  "yfinance": { "key": null, "enabled": true },
+  "finnhub": { "key": "TU_FINNHUB_KEY", "enabled": true },
+  "sec_edgar": { "key": null, "enabled": true },
+  "mboum": { "key": "", "enabled": false },
+  "alpha_vantage": { "key": "TU_ALPHA_VANTAGE_KEY", "enabled": true },
+  "seeking_alpha_rapidapi": { "key": "", "enabled": false },
+  "polygon": { "key": "", "enabled": false },
+  "alpaca": { "key": "", "enabled": false },
+  "fmp": { "key": "", "enabled": false },
+  "apewisdom": { "key": null, "enabled": true },
+  "stocktwits": { "key": null, "enabled": true },
+  "tradingview": { "key": null, "enabled": true },
+  "quiver": { "key": "", "enabled": false }
+}

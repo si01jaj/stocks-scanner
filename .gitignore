@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Data & logs
+data/reports/*.json
+data/.cache/
+logs/*.jsonl
+logs/*.json
+
+# Config (contains API keys)
+config/api_keys.json
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+.env

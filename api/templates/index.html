@@ -1,0 +1,313 @@
+{% extends "base.html" %}
+{% block title %}Stocks Scanner — Dashboard{% endblock %}
+
+{% block content %}
+<!-- Summary Cards -->
+<div class="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
+  <div class="bg-white rounded-xl border border-gray-200 p-5">
+    <div class="flex items-center gap-3">
+      <div class="w-10 h-10 rounded-lg bg-green-50 flex items-center justify-center text-lg">📈</div>
+      <div>
+        <p class="text-xs font-medium text-gray-500 uppercase tracking-wider">Alcistas Hoy</p>
+        <p class="text-2xl font-bold text-green-700">{{ alcistas|length }}</p>
+      </div>
+    </div>
+  </div>
+  <div class="bg-white rounded-xl border border-gray-200 p-5">
+    <div class="flex items-center gap-3">
+      <div class="w-10 h-10 rounded-lg bg-red-50 flex items-center justify-center text-lg">📉</div>
+      <div>
+        <p class="text-xs font-medium text-gray-500 uppercase tracking-wider">Bajistas Hoy</p>
+        <p class="text-2xl font-bold text-red-700">{{ bajistas|length }}</p>
+      </div>
+    </div>
+  </div>
+  <div class="bg-white rounded-xl border border-gray-200 p-5">
+    <div class="flex items-center gap-3">
+      <div class="w-10 h-10 rounded-lg bg-blue-50 flex items-center justify-center text-lg">🔍</div>
+      <div>
+        <p class="text-xs font-medium text-gray-500 uppercase tracking-wider">Candidatos</p>
+        <p class="text-2xl font-bold text-blue-700">{{ reporte_actual.candidatos_brutos if reporte_actual else 0 }}</p>
+      </div>
+    </div>
+  </div>
+  <div class="bg-white rounded-xl border border-gray-200 p-5">
+    <div class="flex items-center gap-3">
+      <div class="w-10 h-10 rounded-lg bg-purple-50 flex items-center justify-center text-lg">📅</div>
+      <div>
+        <p class="text-xs font-medium text-gray-500 uppercase tracking-wider">Días Archivo</p>
+        <p class="text-2xl font-bold text-purple-700">{{ reportes|length }}</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+{% if chart_data %}
+<!-- Historical Chart -->
+<div class="bg-white rounded-xl border border-gray-200 p-6 mb-8">
+  <h2 class="text-sm font-semibold text-gray-900 uppercase tracking-wider mb-4">Histórico últimos días</h2>
+  <div class="h-64">
+    <canvas id="historyChart"></canvas>
+  </div>
+</div>
+{% endif %}
+
+<!-- Top 5 Alcistas -->
+<div class="bg-white rounded-xl border border-gray-200 overflow-hidden mb-8">
+  <div class="px-6 py-4 border-b border-gray-100 flex items-center gap-2">
+    <span class="w-3 h-3 rounded-full bg-green-500"></span>
+    <h2 class="text-sm font-semibold text-gray-900 uppercase tracking-wider">Top Alcistas — Hoy</h2>
+    {% if reporte_actual %}
+    <span class="ml-auto text-xs text-gray-400">{{ reporte_actual.fecha }}</span>
+    {% endif %}
+  </div>
+  {% if alcistas %}
+  <div class="overflow-x-auto">
+    <table class="w-full text-sm">
+      <thead>
+        <tr class="bg-gray-50 text-left">
+          <th class="px-6 py-3 text-xs font-medium text-gray-500 uppercase">#</th>
+          <th class="px-6 py-3 text-xs font-medium text-gray-500 uppercase">Ticker</th>
+          <th class="px-6 py-3 text-xs font-medium text-gray-500 uppercase">Score</th>
+          <th class="px-6 py-3 text-xs font-medium text-gray-500 uppercase">Precio</th>
+          <th class="px-6 py-3 text-xs font-medium text-gray-500 uppercase">RSI</th>
+          <th class="px-6 py-3 text-xs font-medium text-gray-500 uppercase">MACD</th>
+          <th class="px-6 py-3 text-xs font-medium text-gray-500 uppercase">Conv.</th>
+          <th class="px-6 py-3 text-xs font-medium text-gray-500 uppercase">Señales</th>
+          <th class="px-6 py-3 text-xs font-medium text-gray-500 uppercase"></th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-gray-100">
+        {% for c in alcistas %}
+        <tr class="hover:bg-gray-50 transition-colors">
+          <td class="px-6 py-4 text-gray-400 font-mono">{{ loop.index }}</td>
+          <td class="px-6 py-4">
+            <a href="/ticker/{{ c.ticker }}" class="font-semibold text-gray-900 hover:text-green-700">{{ c.ticker }}</a>
+            {% if c.name %}
+            <div class="text-xs text-gray-400 truncate max-w-[200px]">{{ c.name[:40] }}</div>
+            {% endif %}
+          </td>
+          <td class="px-6 py-4">
+            <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium
+              {% if c.score >= 7 %}bg-green-50 text-green-700
+              {% elif c.score >= 5 %}bg-yellow-50 text-yellow-700
+              {% else %}bg-red-50 text-red-700{% endif %}">
+              {{ c.score }}
+            </span>
+          </td>
+          <td class="px-6 py-4 font-mono text-gray-900">${{ "{:,.2f}".format(c.precio) }}</td>
+          <td class="px-6 py-4 font-mono {% if c.rsi and c.rsi < 45 %}text-green-700{% elif c.rsi and c.rsi > 60 %}text-red-700{% else %}text-gray-600{% endif %}">
+            {{ "%.1f"|format(c.rsi) if c.rsi else "—" }}
+          </td>
+          <td class="px-6 py-4 text-center text-lg">{{ "✅" if c.macd_bullish else "❌" }}</td>
+          <td class="px-6 py-4">
+            {% set nivel = c.clasificacion.nivel if c.clasificacion else "" %}
+            {% if nivel == "FUERTE" %}
+            <span class="text-xs font-bold px-2 py-1 rounded bg-green-50 text-green-700">FUERTE</span>
+            {% elif nivel == "ALCISTA" %}
+            <span class="text-xs font-medium px-2 py-1 rounded bg-green-50 text-green-600">ALCISTA</span>
+            {% else %}
+            <span class="text-xs text-gray-400">—</span>
+            {% endif %}
+          </td>
+          <td class="px-6 py-4">
+            <div class="flex gap-1">
+              {% for s in (c.clasificacion.senales or [])[:6] %}
+              <span class="inline-block w-2 h-2 rounded-full bg-green-500" title="{{ s }}"></span>
+              {% endfor %}
+            </div>
+          </td>
+          <td class="px-6 py-4">
+            <a href="/ticker/{{ c.ticker }}" class="text-gray-400 hover:text-gray-600 text-lg">→</a>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="p-12 text-center text-gray-400">
+    <p class="text-4xl mb-3">📭</p>
+    <p class="text-sm">No hay datos para hoy. Ejecuta un scan para comenzar.</p>
+  </div>
+  {% endif %}
+</div>
+
+<!-- Top 5 Bajistas -->
+<div class="bg-white rounded-xl border border-gray-200 overflow-hidden mb-8">
+  <div class="px-6 py-4 border-b border-gray-100 flex items-center gap-2">
+    <span class="w-3 h-3 rounded-full bg-red-500"></span>
+    <h2 class="text-sm font-semibold text-gray-900 uppercase tracking-wider">Top Bajistas — Hoy</h2>
+    {% if reporte_actual %}
+    <span class="ml-auto text-xs text-gray-400">{{ reporte_actual.fecha }}</span>
+    {% endif %}
+  </div>
+  {% if bajistas %}
+  <div class="overflow-x-auto">
+    <table class="w-full text-sm">
+      <thead>
+        <tr class="bg-gray-50 text-left">
+          <th class="px-6 py-3 text-xs font-medium text-gray-500 uppercase">#</th>
+          <th class="px-6 py-3 text-xs font-medium text-gray-500 uppercase">Ticker</th>
+          <th class="px-6 py-3 text-xs font-medium text-gray-500 uppercase">Score</th>
+          <th class="px-6 py-3 text-xs font-medium text-gray-500 uppercase">Precio</th>
+          <th class="px-6 py-3 text-xs font-medium text-gray-500 uppercase">RSI</th>
+          <th class="px-6 py-3 text-xs font-medium text-gray-500 uppercase">MACD</th>
+          <th class="px-6 py-3 text-xs font-medium text-gray-500 uppercase">Conv.</th>
+          <th class="px-6 py-3 text-xs font-medium text-gray-500 uppercase">Señales</th>
+          <th class="px-6 py-3 text-xs font-medium text-gray-500 uppercase"></th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-gray-100">
+        {% for c in bajistas %}
+        <tr class="hover:bg-gray-50 transition-colors">
+          <td class="px-6 py-4 text-gray-400 font-mono">{{ loop.index }}</td>
+          <td class="px-6 py-4">
+            <a href="/ticker/{{ c.ticker }}" class="font-semibold text-gray-900 hover:text-red-700">{{ c.ticker }}</a>
+            {% if c.name %}
+            <div class="text-xs text-gray-400 truncate max-w-[200px]">{{ c.name[:40] }}</div>
+            {% endif %}
+          </td>
+          <td class="px-6 py-4">
+            <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium
+              {% if c.score >= 7 %}bg-green-50 text-green-700
+              {% elif c.score >= 5 %}bg-yellow-50 text-yellow-700
+              {% else %}bg-red-50 text-red-700{% endif %}">
+              {{ c.score }}
+            </span>
+          </td>
+          <td class="px-6 py-4 font-mono text-gray-900">${{ "{:,.2f}".format(c.precio) }}</td>
+          <td class="px-6 py-4 font-mono {% if c.rsi and c.rsi < 45 %}text-green-700{% elif c.rsi and c.rsi > 60 %}text-red-700{% else %}text-gray-600{% endif %}">
+            {{ "%.1f"|format(c.rsi) if c.rsi else "—" }}
+          </td>
+          <td class="px-6 py-4 text-center text-lg">{{ "✅" if c.macd_bullish else "❌" }}</td>
+          <td class="px-6 py-4">
+            {% set nivel = c.clasificacion.nivel if c.clasificacion else "" %}
+            {% if nivel == "FUERTE" %}
+            <span class="text-xs font-bold px-2 py-1 rounded bg-red-50 text-red-700">FUERTE</span>
+            {% elif nivel == "BAJISTA" %}
+            <span class="text-xs font-medium px-2 py-1 rounded bg-red-50 text-red-600">BAJISTA</span>
+            {% else %}
+            <span class="text-xs text-gray-400">—</span>
+            {% endif %}
+          </td>
+          <td class="px-6 py-4">
+            <div class="flex gap-1">
+              {% for s in (c.clasificacion.senales or [])[:6] %}
+              <span class="inline-block w-2 h-2 rounded-full bg-red-500" title="{{ s }}"></span>
+              {% endfor %}
+            </div>
+          </td>
+          <td class="px-6 py-4">
+            <a href="/ticker/{{ c.ticker }}" class="text-gray-400 hover:text-gray-600 text-lg">→</a>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="p-12 text-center text-gray-400">
+    <p class="text-4xl mb-3">📭</p>
+    <p class="text-sm">No hay datos para hoy. Ejecuta un scan para comenzar.</p>
+  </div>
+  {% endif %}
+</div>
+
+<!-- Reports History -->
+<div class="bg-white rounded-xl border border-gray-200 overflow-hidden mb-8">
+  <div class="px-6 py-4 border-b border-gray-100">
+    <h2 class="text-sm font-semibold text-gray-900 uppercase tracking-wider">Historial de Scans</h2>
+  </div>
+  {% if reportes %}
+  <div class="overflow-x-auto">
+    <table class="w-full text-sm">
+      <thead>
+        <tr class="bg-gray-50 text-left">
+          <th class="px-6 py-3 text-xs font-medium text-gray-500 uppercase">Fecha</th>
+          <th class="px-6 py-3 text-xs font-medium text-gray-500 uppercase">Alcistas</th>
+          <th class="px-6 py-3 text-xs font-medium text-gray-500 uppercase">Bajistas</th>
+          <th class="px-6 py-3 text-xs font-medium text-gray-500 uppercase">Candidatos</th>
+          <th class="px-6 py-3 text-xs font-medium text-gray-500 uppercase">Top Alcista</th>
+          <th class="px-6 py-3 text-xs font-medium text-gray-500 uppercase">Top Bajista</th>
+          <th class="px-6 py-3 text-xs font-medium text-gray-500 uppercase"></th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-gray-100">
+        {% for r in reportes %}
+        <tr class="hover:bg-gray-50 transition-colors">
+          <td class="px-6 py-4 font-medium text-gray-900">{{ r.fecha }}</td>
+          <td class="px-6 py-4">
+            <span class="text-green-700 font-medium">{{ r.alcistas_count }}</span>
+          </td>
+          <td class="px-6 py-4">
+            <span class="text-red-700 font-medium">{{ r.bajistas_count }}</span>
+          </td>
+          <td class="px-6 py-4 text-gray-600">{{ r.candidatos }}</td>
+          <td class="px-6 py-4 font-mono text-sm">{{ r.top_alcista }}</td>
+          <td class="px-6 py-4 font-mono text-sm">{{ r.top_bajista }}</td>
+          <td class="px-6 py-4">
+            <a href="/scan/{{ r.fecha }}" class="text-gray-400 hover:text-gray-600 text-sm font-medium">Ver →</a>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="p-12 text-center text-gray-400">
+    <p class="text-sm">No hay scans guardados todavía.</p>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+{% if chart_data %}
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+  const ctx = document.getElementById('historyChart').getContext('2d');
+  new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: {{ chart_data.labels | tojson }},
+      datasets: [
+        {
+          label: 'Alcistas',
+          data: {{ chart_data.alcistas | tojson }},
+          backgroundColor: '#22c55e',
+          borderRadius: 4,
+        },
+        {
+          label: 'Bajistas',
+          data: {{ chart_data.bajistas | tojson }},
+          backgroundColor: '#ef4444',
+          borderRadius: 4,
+        }
+      ]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: {
+          position: 'top',
+          labels: { usePointStyle: true, padding: 20 }
+        }
+      },
+      scales: {
+        y: {
+          beginAtZero: true,
+          ticks: { stepSize: 1 },
+          grid: { color: '#f0f0f0' }
+        },
+        x: {
+          grid: { display: false }
+        }
+      }
+    }
+  });
+});
+</script>
+{% endif %}
+{% endblock %}

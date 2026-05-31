@@ -1,0 +1,10 @@
+yfinance>=0.2.36
+requests>=2.31.0
+feedparser>=6.0.11
+pandas>=1.5.0
+numpy>=1.24.0
+tradingview-ta>=3.3.0
+python-dateutil>=2.8.2
+fastapi>=0.104.0
+uvicorn>=0.24.0
+jinja2>=3.1.2

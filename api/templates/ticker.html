@@ -1,0 +1,88 @@
+{% extends "base.html" %}
+{% block title %}{{ ticker }} — Stocks Scanner{% endblock %}
+
+{% block content %}
+<div class="flex items-center gap-4 mb-8">
+  <a href="javascript:history.back()" class="text-gray-400 hover:text-gray-600 text-lg">←</a>
+  <div>
+    <h1 class="text-2xl font-bold text-gray-900">{{ ticker }}</h1>
+    <p class="text-sm text-gray-500">{{ name if name else '—' }}</p>
+  </div>
+  {% if tendencia %}
+  <span class="ml-auto text-sm px-3 py-1 rounded-full font-medium
+    {% if tendencia == 'alcista' %}bg-green-50 text-green-700
+    {% elif tendencia == 'bajista' %}bg-red-50 text-red-700
+    {% else %}bg-gray-50 text-gray-600{% endif %}">
+    Tendencia {{ tendencia }}
+  </span>
+  {% endif %}
+</div>
+
+{% if entries %}
+<div class="bg-white rounded-xl border border-gray-200 overflow-hidden mb-8">
+  <div class="px-6 py-4 border-b border-gray-100">
+    <h2 class="text-sm font-semibold text-gray-900 uppercase tracking-wider">Histórico</h2>
+  </div>
+  <div class="overflow-x-auto">
+    <table class="w-full text-sm">
+      <thead>
+        <tr class="bg-gray-50 text-left">
+          <th class="px-6 py-3 text-xs font-medium text-gray-500 uppercase">Fecha</th>
+          <th class="px-6 py-3 text-xs font-medium text-gray-500 uppercase">Score</th>
+          <th class="px-6 py-3 text-xs font-medium text-gray-500 uppercase">Precio</th>
+          <th class="px-6 py-3 text-xs font-medium text-gray-500 uppercase">RSI</th>
+          <th class="px-6 py-3 text-xs font-medium text-gray-500 uppercase">MACD</th>
+          <th class="px-6 py-3 text-xs font-medium text-gray-500 uppercase">> SMA50</th>
+          <th class="px-6 py-3 text-xs font-medium text-gray-500 uppercase">> SMA200</th>
+          <th class="px-6 py-3 text-xs font-medium text-gray-500 uppercase">Golden X</th>
+          <th class="px-6 py-3 text-xs font-medium text-gray-500 uppercase">Clasif.</th>
+          <th class="px-6 py-3 text-xs font-medium text-gray-500 uppercase">Puntos</th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-gray-100">
+        {% for entry in entries %}
+        <tr class="hover:bg-gray-50 transition-colors">
+          <td class="px-6 py-4 font-medium text-gray-900">{{ entry.fecha }}</td>
+          <td class="px-6 py-4">
+            <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium
+              {% if entry.score >= 7 %}bg-green-50 text-green-700
+              {% elif entry.score >= 5 %}bg-yellow-50 text-yellow-700
+              {% else %}bg-red-50 text-red-700{% endif %}">
+              {{ entry.score }}
+            </span>
+          </td>
+          <td class="px-6 py-4 font-mono">${{ "{:,.2f}".format(entry.precio) }}</td>
+          <td class="px-6 py-4 font-mono {% if entry.rsi and entry.rsi < 45 %}text-green-700{% elif entry.rsi and entry.rsi > 60 %}text-red-700{% endif %}">
+            {{ "%.1f"|format(entry.rsi) if entry.rsi else "—" }}
+          </td>
+          <td class="px-6 py-4 text-center">{{ "✅" if entry.macd_bullish else "❌" }}</td>
+          <td class="px-6 py-4 text-center">{{ "✅" if entry.sobre_sma50 else "❌" }}</td>
+          <td class="px-6 py-4 text-center">{{ "✅" if entry.sobre_sma200 else "❌" }}</td>
+          <td class="px-6 py-4 text-center">{{ "✅" if entry.golden_cross else "❌" }}</td>
+          <td class="px-6 py-4">
+            {% if entry.clasificacion %}
+            <span class="text-xs font-medium px-2 py-0.5 rounded
+              {% if entry.clasificacion.tipo == 'ALCISTA' %}bg-green-50 text-green-700
+              {% elif entry.clasificacion.tipo == 'BAJISTA' %}bg-red-50 text-red-700
+              {% else %}bg-gray-50 text-gray-600{% endif %}">
+              {{ entry.clasificacion.tipo }} {{ entry.clasificacion.nivel }}
+            </span>
+            {% else %}
+            <span class="text-xs text-gray-400">—</span>
+            {% endif %}
+          </td>
+          <td class="px-6 py-4 font-mono">{{ entry.clasificacion.puntos if entry.clasificacion else "—" }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% else %}
+<div class="bg-white rounded-xl border border-gray-200 p-12 text-center">
+  <p class="text-4xl mb-3">🔍</p>
+  <p class="text-gray-400">Este ticker no aparece en ningún scan de los últimos días.</p>
+  <a href="/" class="mt-4 inline-block text-sm text-gray-900 underline">Volver al dashboard</a>
+</div>
+{% endif %}
+{% endblock %}

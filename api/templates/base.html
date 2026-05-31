@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="es" class="h-full bg-gray-50">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}Stocks Scanner{% endblock %}</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            bullish: { 50: '#f0fdf4', 500: '#22c55e', 700: '#15803d' },
+            bearish: { 50: '#fef2f2', 500: '#ef4444', 700: '#b91c1c' },
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+    * { font-family: 'Inter', system-ui, sans-serif; }
+    .signal-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+    .signal-dot.green { background-color: #22c55e; }
+    .signal-dot.red { background-color: #ef4444; }
+  </style>
+</head>
+<body class="h-full">
+  <nav class="bg-white border-b border-gray-200">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+      <div class="flex items-center justify-between h-16">
+        <div class="flex items-center gap-3">
+          <a href="/" class="flex items-center gap-2">
+            <span class="text-2xl">📊</span>
+            <span class="font-bold text-xl text-gray-900">Stocks Scanner</span>
+          </a>
+        </div>
+        <div class="flex items-center gap-4">
+          <span class="text-sm text-gray-500" id="current-time"></span>
+          <button id="btn-run-scan"
+                  class="inline-flex items-center gap-2 px-4 py-2 bg-gray-900 text-white text-sm font-medium rounded-lg hover:bg-gray-800 transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+            <span id="run-icon">🔄</span>
+            <span id="run-text">Ejecutar Scan</span>
+          </button>
+        </div>
+      </div>
+    </div>
+  </nav>
+
+  <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+    {% block content %}{% endblock %}
+  </main>
+
+  <!-- Run Scan Modal -->
+  <div id="scan-modal" class="fixed inset-0 bg-black/50 hidden items-center justify-center z-50">
+    <div class="bg-white rounded-2xl p-8 max-w-md w-full mx-4 shadow-2xl">
+      <div class="text-center">
+        <div class="text-4xl mb-4 animate-pulse" id="modal-icon">🔄</div>
+        <h3 class="text-lg font-semibold text-gray-900 mb-2" id="modal-title">Ejecutando Scanner</h3>
+        <p class="text-sm text-gray-500 mb-6" id="modal-desc">Analizando fuentes y clasificando valores...</p>
+        <div class="w-full bg-gray-100 rounded-full h-2 mb-6">
+          <div id="modal-progress" class="bg-gray-900 h-2 rounded-full transition-all duration-500" style="width: 0%"></div>
+        </div>
+        <p class="text-xs text-gray-400 font-mono" id="modal-log"></p>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // Current time
+    function updateTime() {
+      const now = new Date();
+      document.getElementById('current-time').textContent =
+        now.toLocaleDateString('es-ES', { day: 'numeric', month: 'short', year: 'numeric' }) +
+        ' ' + now.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' });
+    }
+    updateTime();
+    setInterval(updateTime, 30000);
+
+    // Run scan
+    document.getElementById('btn-run-scan')?.addEventListener('click', async function() {
+      const modal = document.getElementById('scan-modal');
+      const btn = this;
+      btn.disabled = true;
+      document.getElementById('run-text').textContent = 'Escaneando...';
+      modal.classList.remove('hidden');
+      modal.classList.add('flex');
+
+      const progress = document.getElementById('modal-progress');
+      const logEl = document.getElementById('modal-log');
+
+      const steps = [
+        { pct: 20, msg: 'Escaneando fuentes (RSS, Reddit, StockTwits)...' },
+        { pct: 40, msg: 'Evaluando candidatos...' },
+        { pct: 60, msg: 'Filtrando por liquidez...' },
+        { pct: 80, msg: 'Clasificando alcistas/bajistas...' },
+        { pct: 95, msg: 'Enriqueciendo con Finnhub...' },
+      ];
+
+      for (const step of steps) {
+        progress.style.width = step.pct + '%';
+        logEl.textContent = step.msg;
+        await new Promise(r => setTimeout(r, 800 + Math.random() * 1200));
+      }
+
+      try {
+        const res = await fetch('/api/run', { method: 'POST' });
+        const data = await res.json();
+        progress.style.width = '100%';
+        document.getElementById('modal-icon').textContent = '✅';
+
+        if (data.status === 'ok') {
+          document.getElementById('modal-title').textContent = '¡Scan completado!';
+          document.getElementById('modal-desc').textContent =
+            `${data.report?.alcistas?.length || 0} alcistas, ${data.report?.bajistas?.length || 0} bajistas`;
+        } else {
+          document.getElementById('modal-title').textContent = 'Error';
+          document.getElementById('modal-desc').textContent = data.error || 'Ocurrió un error';
+          document.getElementById('modal-icon').textContent = '❌';
+        }
+
+        setTimeout(() => {
+          modal.classList.add('hidden');
+          modal.classList.remove('flex');
+          btn.disabled = false;
+          document.getElementById('run-text').textContent = 'Ejecutar Scan';
+          window.location.reload();
+        }, 2000);
+      } catch (e) {
+        document.getElementById('modal-title').textContent = 'Error de conexión';
+        document.getElementById('modal-desc').textContent = e.message;
+        document.getElementById('modal-icon').textContent = '❌';
+        setTimeout(() => {
+          modal.classList.add('hidden');
+          modal.classList.remove('flex');
+          btn.disabled = false;
+          document.getElementById('run-text').textContent = 'Ejecutar Scan';
+        }, 3000);
+      }
+    });
+  </script>
+  {% block extra_scripts %}{% endblock %}
+</body>
+</html>
