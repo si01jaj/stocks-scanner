@@ -111,14 +111,16 @@
             {% endif %}
           </td>
           <td class="px-6 py-4">
-            <div class="flex gap-1">
-              {% for s in (c.clasificacion.senales or [])[:6] %}
-              <span class="inline-block w-2 h-2 rounded-full bg-green-500" title="{{ s }}"></span>
+            <div class="flex flex-wrap gap-1.5 items-center">
+              {% for s in (c.clasificacion.senales or [])[:5] %}
+              <span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] leading-tight bg-green-50 text-green-700 border border-green-200">
+                {{ s[:20] }}
+              </span>
               {% endfor %}
             </div>
           </td>
           <td class="px-6 py-4">
-            <a href="/ticker/{{ c.ticker }}" class="text-gray-400 hover:text-gray-600 text-lg">→</a>
+            <a href="/ticker/{{ c.ticker }}" class="text-gray-400 hover:text-gray-600 text-sm font-medium">Ver →</a>
           </td>
         </tr>
         {% endfor %}
@@ -192,14 +194,16 @@
             {% endif %}
           </td>
           <td class="px-6 py-4">
-            <div class="flex gap-1">
-              {% for s in (c.clasificacion.senales or [])[:6] %}
-              <span class="inline-block w-2 h-2 rounded-full bg-red-500" title="{{ s }}"></span>
+            <div class="flex flex-wrap gap-1.5 items-center">
+              {% for s in (c.clasificacion.senales or [])[:5] %}
+              <span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] leading-tight bg-red-50 text-red-700 border border-red-200">
+                {{ s[:20] }}
+              </span>
               {% endfor %}
             </div>
           </td>
           <td class="px-6 py-4">
-            <a href="/ticker/{{ c.ticker }}" class="text-gray-400 hover:text-gray-600 text-lg">→</a>
+            <a href="/ticker/{{ c.ticker }}" class="text-gray-400 hover:text-gray-600 text-sm font-medium">Ver →</a>
           </td>
         </tr>
         {% endfor %}

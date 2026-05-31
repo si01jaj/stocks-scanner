@@ -72,8 +72,8 @@ SIGNAL_LABELS = {
     "bajo_sma50": "Precio < SMA50",
     "sobre_sma200": "Precio > SMA200",
     "bajo_sma200": "Precio < SMA200",
-    "rsi_optimo": "RSI 40-58",
-    "rsi_sobrecomprado": "RSI > 58",
+    "rsi_optimo": "RSI < 45 (room to run)",
+    "rsi_sobrecomprado": "RSI > 65 (sobrecomprado)",
     "macd_bullish": "MACD alcista",
     "macd_bearish": "MACD bajista",
     "golden_cross": "Golden cross",
@@ -194,7 +194,9 @@ def es_ticker_valido(ticker):
         "TO", "UP", "WE", "BIG", "TOP", "LOW", "KEY", "SET", "RUN", "HIT",
         "CUT", "BUY", "PUT", "USD", "JPY", "EUR", "GBP", "CAD", "AUD",
     }
-    return ticker not in COMMON_WORDS
+    if ticker in COMMON_WORDS or ticker in _CRYPTO_TICKERS:
+        return False
+    return True
 
 
 def fusionar_candidatos(fuentes):
@@ -346,11 +348,43 @@ def obtener_datos_candidato(ticker):
     return datos
 
 
+_CRYPTO_TICKERS = {
+    "BTC", "ETH", "XRP", "SOL", "ADA", "DOGE", "DOT", "AVAX", "MATIC",
+    "LINK", "UNI", "SHIB", "LTC", "BCH", "ATOM", "XLM", "NEAR", "ALGO",
+    "FTM", "HBAR", "VET", "MANA", "SAND", "AXS", "THETA", "FIL", "EOS",
+    "AAVE", "GRT", "XTZ", "FLOW", "CHZ", "ENJ", "CRV", "COMP", "YFI",
+    "SUSHI", "BAT", "ZEC", "DASH", "XMR", "IOTA", "KLAY", "ONE",
+    "CELO", "ANKR", "STORJ", "LRC", "IMX", "APE", "OP", "ARB",
+    "SUI", "SEI", "TIA", "JUP", "WIF", "BONK", "PEPE", "FLOKI",
+    "PENGU", "TOSHI", "DOG", "LUNC", "JASMY", "GALA", "RENDER",
+    "BITO", "BITQ", "BLOK", "ETHE", "GBTC",
+}
+
+
+def es_crypto_o_etf_crypto(ticker, datos=None):
+    """Detecta si un ticker es crypto o ETF de crypto."""
+    t = ticker.upper()
+    if t in _CRYPTO_TICKERS:
+        return True
+    if datos:
+        sector = (datos.get("sector") or "").lower()
+        name = (datos.get("name") or "").lower()
+        industry = (datos.get("industry") or "").lower()
+        crypto_keywords = ["crypto", "bitcoin", "ethereum", "digital asset", "blockchain"]
+        for kw in crypto_keywords:
+            if kw in sector or kw in industry or kw in name:
+                return True
+    return False
+
+
 def pasar_filtro_liquidez(datos):
     """
     Filtro de liquidez: precio mínimo, volumen mínimo, market cap mínimo.
     """
     if not datos:
+        return False
+
+    if es_crypto_o_etf_crypto(datos.get("ticker", ""), datos):
         return False
 
     precio = datos.get("precio", 0)
@@ -391,7 +425,7 @@ def analizar_senales_alcistas(datos):
         senales.append("sobre_sma200")
 
     rsi = datos.get("rsi_14")
-    if rsi is not None and 40 <= rsi <= 58:
+    if rsi is not None and rsi < 45:
         puntos += SIGNAL_WEIGHTS["rsi_optimo"]
         senales.append("rsi_optimo")
 
@@ -451,7 +485,7 @@ def analizar_senales_bajistas(datos):
         senales.append("bajo_sma200")
 
     rsi = datos.get("rsi_14")
-    if rsi is not None and rsi > 58:
+    if rsi is not None and rsi > 65:
         puntos += SIGNAL_WEIGHTS["rsi_sobrecomprado"]
         senales.append("rsi_sobrecomprado")
 
@@ -514,7 +548,9 @@ def estimar_score(datos):
             score += 1.0
         elif rsi < 55:
             score += 0.5
-        elif rsi > 70:
+        elif rsi > 65:
+            score -= 1.0
+        if rsi > 75:
             score -= 1.0
 
     if datos.get("macd_bullish"):
