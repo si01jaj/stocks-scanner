@@ -1,11 +1,13 @@
-version: '3.8'
+name: stocks-scanner
 
 services:
   scanner:
     build: .
     container_name: stocks-scanner
     ports:
-      - "8030:8080"
+      # Loopback: el proyecto no tiene ninguna autenticación, así que no debe
+      # quedar alcanzable desde internet. La entrada va por cloudflared/traefik.
+      - "127.0.0.1:8030:8080"
     volumes:
       - ./data:/app/data
       - ./logs:/app/logs
