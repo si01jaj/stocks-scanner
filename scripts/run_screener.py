@@ -6,9 +6,10 @@ Pipeline:
   1. Escanear fuentes (RSS, Reddit, StockTwits) → lista de candidatos
   2. Quick-score cada candidato (yfinance + TradingView)
   3. Filtrar por liquidez (precio, volumen, market cap)
-  4. Clasificar como ALCISTA / BAJISTA según señales técnicas
+  4. Clasificar como ALCISTA / BAJISTA / NEUTRO según señales técnicas
   5. Enriquecer top 5 de cada categoría con Finnhub (insider, analyst)
-  6. Guardar snapshot en data/reports/ y limpiar los mayores a 5 días
+  6. Guardar snapshot en data/reports/ (retención por días) y registrar las
+     señales en el histórico SQLite (data/signals.db)
 
 Usage:
     python scripts/run_screener.py                           # escaneo completo
@@ -24,19 +25,27 @@ if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 
 from scripts.api_caller import call_api, call_with_fallback
-from scripts.api_config import load_config, is_api_available
+from scripts.api_config import load_config, is_api_available, get_api_key
 from scripts.usage_tracker import get_tracker
+from scripts.technical_analysis import _compute_rsi
 
 REPORTS_DIR = os.path.join(_project_root, "data", "reports")
-MAX_DAYS = 5
+RETENTION_DAYS = int(os.environ.get("SCANNER_RETENTION_DAYS", "30"))
+RETENTION_MAX_REPORTS = int(os.environ.get("SCANNER_RETENTION_MAX", "500"))
 
 # ═══════════════════════════════════════════════════════════════════
 #  PESOS PARA SEÑALES — cada señal suma puntos a la clasificación
 # ═══════════════════════════════════════════════════════════════════
+#
+#  IMPORTANTE (invariante del diseño):
+#  aquí sólo entran señales *independientes*. El score compuesto
+#  (estimar_score) NO se puntúa como señal: se deriva de SMA50, SMA200,
+#  RSI, MACD y TradingView, que ya puntúan por separado. Contarlo también
+#  como puntos era una doble contabilización circular (el 100% de la
+#  convicción de un valor podía venir del mismo hecho contado 3 veces).
+#  Su papel ahora es el de filtro de régimen en clasificar_candidato().
 
 SIGNAL_WEIGHTS = {
-    "score_alto": 3,
-    "score_bajo": 3,
     "sobre_sma50": 2,
     "bajo_sma50": 2,
     "sobre_sma200": 2,
@@ -59,27 +68,60 @@ SIGNAL_WEIGHTS = {
     "analyst_bearish": 2,
 }
 
-MAX_BULLISH_SCORE = 18
-MAX_BEARISH_SCORE = 18
-MIN_BULLISH_THRESHOLD = 8
-MIN_BEARISH_THRESHOLD = 8
-STRONG_THRESHOLD = 12
+SIGNALS_ALCISTAS = (
+    "sobre_sma50", "sobre_sma200", "rsi_optimo", "macd_bullish",
+    "golden_cross", "vol_alto", "tradingview_bull", "insider_buy",
+    "sector_tailwind", "analyst_bullish",
+)
+SIGNALS_BAJISTAS = (
+    "bajo_sma50", "bajo_sma200", "rsi_sobrecomprado", "macd_bearish",
+    "death_cross", "vol_alto_bajista", "tradingview_bear", "insider_sell",
+    "sector_headwind", "analyst_bearish",
+)
+
+# El máximo se DERIVA de los pesos: nunca vuelve a quedarse desfasado.
+MAX_BULLISH_SCORE = sum(SIGNAL_WEIGHTS[s] for s in SIGNALS_ALCISTAS)
+MAX_BEARISH_SCORE = sum(SIGNAL_WEIGHTS[s] for s in SIGNALS_BAJISTAS)
+
+MIN_BULLISH_THRESHOLD = 6
+MIN_BEARISH_THRESHOLD = 6
+STRONG_THRESHOLD = 9
+
+# Nota de calibración: al retirar `score_alto`/`score_bajo` (3 puntos que eran
+# el mismo hecho contado dos veces) la escala práctica bajó. Con los datos de
+# un candidato típico sólo son evaluables ~10 de los 17 puntos posibles
+# (TradingView, insider y analistas llegan en el enriquecimiento posterior),
+# así que 6 puntos = estructura de tendencia (5) + una confirmación. El techo
+# real de cada candidato se expone como `max_disponible`.
+
+# Diferencia mínima entre bandos: un empate ya no se resuelve "a favor del
+# alcista", se descarta. Exigir margen evita clasificaciones por moneda al aire.
+MIN_SCORE_MARGIN = 1
+
+# El score actúa como filtro de régimen, coherente con cada bando.
+SCORE_GATE_BULLISH = 5.5
+SCORE_GATE_BEARISH = 4.5
+
+# Umbrales de RSI (una sola definición para todo el módulo)
+RSI_OPTIMO_MAX = 45       # < 45: margen para subir (señal alcista)
+RSI_OVERBOUGHT = 65       # > 65: sobrecompra (señal bajista)
+RSI_EXTREME = 75          # > 75: sobrecompra extrema (penaliza el score)
+
+VOLUME_RATIO_THRESHOLD = 1.2
+
 
 SIGNAL_LABELS = {
-    "score_alto": "Score ≥ 6.5",
-    "score_bajo": "Score ≤ 4.5",
     "sobre_sma50": "Precio > SMA50",
     "bajo_sma50": "Precio < SMA50",
     "sobre_sma200": "Precio > SMA200",
     "bajo_sma200": "Precio < SMA200",
-    "rsi_optimo": "RSI < 45 (room to run)",
-    "rsi_sobrecomprado": "RSI > 65 (sobrecomprado)",
-    "rsi_sobrecomprado_bull": "RSI > 75 (sobrecompra extrema)",
+    "rsi_optimo": f"RSI < {RSI_OPTIMO_MAX} (room to run)",
+    "rsi_sobrecomprado": f"RSI > {RSI_OVERBOUGHT} (sobrecomprado)",
     "macd_bullish": "MACD alcista",
     "macd_bearish": "MACD bajista",
     "golden_cross": "Golden cross",
     "death_cross": "Death cross",
-    "vol_alto": "Volumen > promedio",
+    "vol_alto": "Volumen alto en subida",
     "vol_alto_bajista": "Volumen alto en caída",
     "tradingview_bull": "TradingView BUY+",
     "tradingview_bear": "TradingView SELL+",
@@ -276,12 +318,20 @@ def obtener_datos_candidato(ticker):
     sma50 = float(close.rolling(50).mean().iloc[-1]) if len(close) >= 50 else None
     sma200 = float(close.rolling(200).mean().iloc[-1]) if len(close) >= 200 else None
 
-    # RSI manual
-    delta = close.diff()
-    gain = delta.where(delta > 0, 0).rolling(window=14).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-    rs = gain / loss
-    rsi = float((100 - (100 / (1 + rs))).iloc[-1]) if loss.iloc[-1] != 0 else 50
+    # RSI — implementación ÚNICA (scripts/technical_analysis._compute_rsi).
+    # Antes había una copia local que devolvía 50 cuando no había pérdidas en
+    # 14 sesiones, es decir justo en los valores parabólicos (donde el aviso de
+    # sobrecompra importa). La implementación buena ya existía en el repo.
+    rsi = _compute_rsi(close, 14)
+    if rsi is None:  # serie plana o historia insuficiente
+        rsi = 50.0
+
+    # Variación de la última sesión: necesaria para saber si el volumen alto
+    # fue de subida o de caída.
+    if len(close) >= 2 and float(close.iloc[-2]) > 0:
+        variacion_1d = (latest_close / float(close.iloc[-2]) - 1) * 100
+    else:
+        variacion_1d = 0.0
 
     # MACD
     ema12 = close.ewm(span=12).mean()
@@ -338,6 +388,7 @@ def obtener_datos_candidato(ticker):
         "rsi_14": round(rsi, 1),
         "macd_bullish": macd_bullish,
         "volume_ratio": round(volume_ratio, 2),
+        "variacion_pct_1d": round(variacion_1d, 2),
         "vol_latest": vol_latest,
         "vol_avg_20": int(vol_avg_20) if isinstance(vol_avg_20, (int, float)) else 0,
         "precio_52w_high": round(precio_52w_high, 2) if precio_52w_high else None,
@@ -412,11 +463,6 @@ def analizar_senales_alcistas(datos):
     puntos = 0
     senales = []
 
-    score_estimado = estimar_score(datos)
-    if score_estimado >= 6.5:
-        puntos += SIGNAL_WEIGHTS["score_alto"]
-        senales.append("score_alto")
-
     if datos.get("sobre_sma50"):
         puntos += SIGNAL_WEIGHTS["sobre_sma50"]
         senales.append("sobre_sma50")
@@ -426,12 +472,9 @@ def analizar_senales_alcistas(datos):
         senales.append("sobre_sma200")
 
     rsi = datos.get("rsi_14")
-    if rsi is not None and rsi < 45:
+    if rsi is not None and rsi < RSI_OPTIMO_MAX:
         puntos += SIGNAL_WEIGHTS["rsi_optimo"]
         senales.append("rsi_optimo")
-    elif rsi is not None and rsi > 75:
-        puntos -= 3  # penaliza sobrecompra extrema
-        senales.append("rsi_sobrecomprado_bull")
 
     if datos.get("macd_bullish"):
         puntos += SIGNAL_WEIGHTS["macd_bullish"]
@@ -441,7 +484,8 @@ def analizar_senales_alcistas(datos):
         puntos += SIGNAL_WEIGHTS["golden_cross"]
         senales.append("golden_cross")
 
-    if datos.get("volume_ratio", 0) > 1.2:
+    # El volumen sólo es señal alcista si la sesión fue de subida.
+    if _volumen_alto_con_direccion(datos, alcista=True):
         puntos += SIGNAL_WEIGHTS["vol_alto"]
         senales.append("vol_alto")
 
@@ -470,15 +514,27 @@ def analizar_senales_alcistas(datos):
     return puntos, senales
 
 
+def _volumen_alto_con_direccion(datos, alcista):
+    """
+    Volumen por encima de lo normal Y sesión en la dirección esperada.
+
+    El motor anterior sumaba +1 al bando bajista ("Volumen alto en caída")
+    con sólo mirar el ratio, sin comprobar que el precio hubiera caído: el
+    mismo dato puntuaba en los dos bandos. Si no hay variación disponible no
+    se concede el punto (mejor ausencia de señal que señal inventada).
+    """
+    if datos.get("volume_ratio", 0) <= VOLUME_RATIO_THRESHOLD:
+        return False
+    var = datos.get("variacion_pct_1d")
+    if var is None:
+        return False
+    return var >= 0 if alcista else var < 0
+
+
 def analizar_senales_bajistas(datos):
     """Analiza señales bajistas y retorna (puntos, lista_señales)."""
     puntos = 0
     senales = []
-
-    score_estimado = estimar_score(datos)
-    if score_estimado <= 4.5:
-        puntos += SIGNAL_WEIGHTS["score_bajo"]
-        senales.append("score_bajo")
 
     if datos.get("sobre_sma50") is False:
         puntos += SIGNAL_WEIGHTS["bajo_sma50"]
@@ -489,7 +545,7 @@ def analizar_senales_bajistas(datos):
         senales.append("bajo_sma200")
 
     rsi = datos.get("rsi_14")
-    if rsi is not None and rsi > 65:
+    if rsi is not None and rsi > RSI_OVERBOUGHT:
         puntos += SIGNAL_WEIGHTS["rsi_sobrecomprado"]
         senales.append("rsi_sobrecomprado")
 
@@ -501,7 +557,8 @@ def analizar_senales_bajistas(datos):
         puntos += SIGNAL_WEIGHTS["death_cross"]
         senales.append("death_cross")
 
-    if datos.get("volume_ratio", 0) > 1.2:
+    # El volumen sólo es señal bajista si la sesión fue de caída.
+    if _volumen_alto_con_direccion(datos, alcista=False):
         puntos += SIGNAL_WEIGHTS["vol_alto_bajista"]
         senales.append("vol_alto_bajista")
 
@@ -546,16 +603,20 @@ def estimar_score(datos):
 
     rsi = datos.get("rsi_14")
     if rsi is not None:
+        # Escala ÚNICA de RSI: antes se restaba -2 por rsi>65 y otros -2 por
+        # rsi>75 (acumulativo), más -3 adicionales en las señales. Un valor
+        # con estructura alcista perfecta y RSI 80 acababa con score 4.5 y
+        # clasificado como bajista. Ahora la sobrecompra penaliza una vez.
         if rsi < 35:
             score += 1.5
-        elif rsi < 45:
+        elif rsi < RSI_OPTIMO_MAX:
             score += 1.0
         elif rsi < 55:
             score += 0.5
-        elif rsi > 65:
-            score -= 2.0
-        if rsi > 75:
-            score -= 2.0
+        elif rsi > RSI_EXTREME:
+            score -= 3.0
+        elif rsi > RSI_OVERBOUGHT:
+            score -= 1.5
 
     if datos.get("macd_bullish"):
         score += 1.0
@@ -575,37 +636,113 @@ def estimar_score(datos):
     return max(0.0, min(10.0, round(score, 2)))
 
 
+def _senal_disponible(nombre, datos):
+    """
+    ¿Se pudo evaluar realmente esta señal con los datos del candidato?
+
+    Sirve para no exigir 8 puntos cuando el candidato sólo permite evaluar 10:
+    TradingView, insider y analistas llegan después de clasificar, y sin este
+    dato el denominador del dashboard engañaba.
+    """
+    if nombre in ("sobre_sma50", "bajo_sma50"):
+        return datos.get("sobre_sma50") is not None
+    if nombre in ("sobre_sma200", "bajo_sma200"):
+        return datos.get("sobre_sma200") is not None
+    if nombre in ("rsi_optimo", "rsi_sobrecomprado"):
+        return datos.get("rsi_14") is not None
+    if nombre in ("macd_bullish", "macd_bearish"):
+        return datos.get("macd_bullish") is not None
+    if nombre in ("golden_cross", "death_cross"):
+        return datos.get("golden_cross") is not None
+    if nombre in ("vol_alto", "vol_alto_bajista"):
+        return datos.get("variacion_pct_1d") is not None
+    if nombre in ("tradingview_bull", "tradingview_bear"):
+        return bool(datos.get("tradingview"))
+    if nombre in ("insider_buy", "insider_sell"):
+        return datos.get("insider_mspr") is not None
+    if nombre in ("analyst_bullish", "analyst_bearish"):
+        return datos.get("analyst_buy_pct") is not None
+    if nombre in ("sector_tailwind", "sector_headwind"):
+        return datos.get("sector_modifier") is not None
+    return False
+
+
+def max_puntos_disponibles(datos, alcista=True):
+    """Techo evaluable para este candidato (no el máximo teórico del modelo)."""
+    nombres = SIGNALS_ALCISTAS if alcista else SIGNALS_BAJISTAS
+    return sum(SIGNAL_WEIGHTS[s] for s in nombres if _senal_disponible(s, datos))
+
+
 def clasificar_candidato(datos):
     """
-    Clasifica un candidato como ALCISTA, BAJISTA o None.
-    Retorna dict con clasificación o None si es neutro.
+    Clasifica un candidato como ALCISTA, BAJISTA o None (neutro).
+
+    Reglas:
+      - El score compuesto actúa como FILTRO de régimen (no como puntos): no
+        se puede ser alcista con score bajo ni bajista con score alto.
+      - Se exige un margen mínimo entre bandos: el empate ya no se resuelve
+        a favor del alcista, se descarta.
     """
     puntos_alcista, senales_alcista = analizar_senales_alcistas(datos)
     puntos_bajista, senales_bajista = analizar_senales_bajistas(datos)
+    score = datos.get("score_estimado", 5.0)
 
-    # Determinar clasificación
-    if puntos_alcista >= puntos_bajista and puntos_alcista >= MIN_BULLISH_THRESHOLD:
+    alcista_valido = (
+        puntos_alcista >= MIN_BULLISH_THRESHOLD
+        and score >= SCORE_GATE_BULLISH
+        and (puntos_alcista - puntos_bajista) >= MIN_SCORE_MARGIN
+    )
+    bajista_valido = (
+        puntos_bajista >= MIN_BEARISH_THRESHOLD
+        and score <= SCORE_GATE_BEARISH
+        and (puntos_bajista - puntos_alcista) >= MIN_SCORE_MARGIN
+    )
+
+    if alcista_valido:
         nivel = "FUERTE" if puntos_alcista >= STRONG_THRESHOLD else "ALCISTA"
         return {
             "tipo": "ALCISTA",
             "nivel": nivel,
             "puntos": puntos_alcista,
             "max_posible": MAX_BULLISH_SCORE,
+            "max_disponible": max_puntos_disponibles(datos, alcista=True),
+            "score": score,
+            "margen": puntos_alcista - puntos_bajista,
             "senales": senales_alcista,
             "senales_labels": [SIGNAL_LABELS.get(s, s) for s in senales_alcista],
         }
-    elif puntos_bajista > puntos_alcista and puntos_bajista >= MIN_BEARISH_THRESHOLD:
+
+    if bajista_valido:
         nivel = "FUERTE" if puntos_bajista >= STRONG_THRESHOLD else "BAJISTA"
         return {
             "tipo": "BAJISTA",
             "nivel": nivel,
             "puntos": puntos_bajista,
             "max_posible": MAX_BEARISH_SCORE,
+            "max_disponible": max_puntos_disponibles(datos, alcista=False),
+            "score": score,
+            "margen": puntos_bajista - puntos_alcista,
             "senales": senales_bajista,
             "senales_labels": [SIGNAL_LABELS.get(s, s) for s in senales_bajista],
         }
 
     return None
+
+
+def motivo_descarte(datos, puntos_alcista=None, puntos_bajista=None):
+    """Motivo legible del descarte, para trazabilidad del scan."""
+    pb = puntos_alcista if puntos_alcista is not None else analizar_senales_alcistas(datos)[0]
+    pr = puntos_bajista if puntos_bajista is not None else analizar_senales_bajistas(datos)[0]
+    score = datos.get("score_estimado", 5.0)
+    if pb < MIN_BULLISH_THRESHOLD and pr < MIN_BEARISH_THRESHOLD:
+        return "señales insuficientes"
+    if abs(pb - pr) < MIN_SCORE_MARGIN:
+        return f"empate técnico ({pb}-{pr})"
+    if pb > pr and score < SCORE_GATE_BULLISH:
+        return f"score {score} por debajo del umbral alcista"
+    if pr > pb and score > SCORE_GATE_BEARISH:
+        return f"score {score} por encima del umbral bajista"
+    return "sin clasificación"
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -622,17 +759,10 @@ def enriquecer_con_finnhub(candidato, config):
         return
 
     import requests
-    key = None
-    try:
-        from scripts.api_config import get_api_key
-        key = get_api_key("finnhub", config)
-    except Exception:
-        pass
-    if not key:
-        for entry in config.values():
-            if isinstance(entry, dict) and isinstance(entry.get("key"), str) and len(entry["key"]) > 10:
-                key = entry["key"]
-                break
+    # Sólo la clave de Finnhub. Antes, si faltaba, se recorría el resto del
+    # fichero de config y se enviaba la primera clave de +10 caracteres a
+    # finnhub.io: podía exfiltrar la clave de Alpha Vantage o Polygon.
+    key = get_api_key("finnhub", config)
     if not key:
         return
 
@@ -703,13 +833,48 @@ def enriquecer_con_finnhub(candidato, config):
 #  FASE 5: REPORTES
 # ═══════════════════════════════════════════════════════════════════
 
-def cleanup_reportes_viejos(max_dias=MAX_DAYS):
-    """Mantiene solo los últimos N reportes."""
+def cleanup_reportes_viejos(max_dias=None, max_reportes=None):
+    """
+    Elimina reportes con más antigüedad que `max_dias` (por fecha del nombre)
+    y aplica un tope de seguridad de `max_reportes`.
+
+    El nombre antiguo (`MAX_DAYS`) y el docstring decían "5 días" pero el
+    código conservaba los 5 ficheros más recientes, que en la práctica son
+    cinco escaneos: se perdía el histórico en días de mucho uso y se
+    conservaban meses de reportes viejos si el scanner no corría.
+    """
     if not os.path.exists(REPORTS_DIR):
-        return
+        return 0
+    max_dias = RETENTION_DAYS if max_dias is None else max_dias
+    max_reportes = RETENTION_MAX_REPORTS if max_reportes is None else max_reportes
+
+    limite = date.today() - timedelta(days=max_dias)
     reportes = sorted(glob.glob(os.path.join(REPORTS_DIR, "scan_*.json")))
-    while len(reportes) > max_dias:
-        os.remove(reportes.pop(0))
+    eliminados = 0
+
+    for path in reportes:
+        basename = os.path.basename(path)
+        try:
+            fecha_reporte = datetime.strptime(basename[5:15], "%Y-%m-%d").date()
+        except ValueError:
+            fecha_reporte = date.fromtimestamp(os.path.getmtime(path))
+        if fecha_reporte < limite:
+            try:
+                os.remove(path)
+                eliminados += 1
+            except OSError:
+                pass
+
+    # Tope duro por número, por si algo genera muchos reportes en un mismo día
+    restantes = sorted(glob.glob(os.path.join(REPORTS_DIR, "scan_*.json")))
+    for path in restantes[:-max_reportes] if len(restantes) > max_reportes else []:
+        try:
+            os.remove(path)
+            eliminados += 1
+        except OSError:
+            pass
+
+    return eliminados
 
 
 def guardar_reporte(resultado):
@@ -838,6 +1003,7 @@ def ejecutar_screener(tickers_especificos=None, verbose=True):
     log(f"\nFASE 2: Evaluando candidatos...\n")
 
     candidatos = []
+    contadores = {"sin_datos": 0, "sin_liquidez": 0, "neutros": 0}
     if tickers_especificos:
         lista = candidatos_brutos
         fuente_info = {}
@@ -852,10 +1018,12 @@ def ejecutar_screener(tickers_especificos=None, verbose=True):
 
         datos = obtener_datos_candidato(ticker)
         if not datos:
+            contadores["sin_datos"] += 1
             log("✗ sin datos")
             continue
 
         if not pasar_filtro_liquidez(datos):
+            contadores["sin_liquidez"] += 1
             log(f"✗ liquidez (${datos.get('precio', 0)})")
             continue
 
@@ -872,11 +1040,12 @@ def ejecutar_screener(tickers_especificos=None, verbose=True):
         if clasificacion:
             datos["clasificacion"] = clasificacion
             puntos = clasificacion["puntos"]
-            max_pts = clasificacion["max_posible"]
-            log(f"✅ {clasificacion['tipo']} {clasificacion['nivel']} ({puntos}/{max_pts})")
+            disp = clasificacion["max_disponible"]
+            log(f"✅ {clasificacion['tipo']} {clasificacion['nivel']} ({puntos}/{disp} disponibles)")
             candidatos.append(datos)
         else:
-            log(f"→ neutro ({datos['score_estimado']})")
+            contadores["neutros"] += 1
+            log(f"→ neutro ({datos['score_estimado']}) — {motivo_descarte(datos)}")
 
         # Pequeña pausa entre tickers
         time.sleep(0.3)
@@ -902,7 +1071,7 @@ def ejecutar_screener(tickers_especificos=None, verbose=True):
         cl = c["clasificacion"]
         senales_str = ", ".join(cl["senales_labels"][:4])
         log(f"    {c['ticker']:<8} {c['score_estimado']}/10  "
-            f"[{cl['nivel']}]  {cl['puntos']}/{cl['max_posible']}pts  "
+            f"[{cl['nivel']}]  {cl['puntos']}/{cl.get('max_disponible', cl['max_posible'])}pts  "
             f"${c['precio']}  {senales_str}")
 
     log(f"\n  BAJISTAS: {len(bajistas)} total, top 5:")
@@ -910,7 +1079,7 @@ def ejecutar_screener(tickers_especificos=None, verbose=True):
         cl = c["clasificacion"]
         senales_str = ", ".join(cl["senales_labels"][:4])
         log(f"    {c['ticker']:<8} {c['score_estimado']}/10  "
-            f"[{cl['nivel']}]  {cl['puntos']}/{cl['max_posible']}pts  "
+            f"[{cl['nivel']}]  {cl['puntos']}/{cl.get('max_disponible', cl['max_posible'])}pts  "
             f"${c['precio']}  {senales_str}")
 
     # ─── Fase 4: Enriquecer con Finnhub ───────────────────────
@@ -934,14 +1103,24 @@ def ejecutar_screener(tickers_especificos=None, verbose=True):
         "stats": {
             "total_alcistas": len(alcistas),
             "total_bajistas": len(bajistas),
-            "neutros": len(candidatos) - len(alcistas) - len(bajistas),
-            "sin_liquidez": len(lista) - len(candidatos),
+            "neutros": contadores["neutros"],
+            "sin_datos": contadores["sin_datos"],
+            "sin_liquidez": contadores["sin_liquidez"],
             "elapsed_seconds": round(time.time() - start_time, 1),
         },
     }
 
-    # Guardar reporte
-    cleanup_reportes_viejos(MAX_DAYS)
+    # Guardar reporte + histórico persistente
+    try:
+        from scripts.signals_ledger import record_scan
+        n_registradas = record_scan(resultado)
+        log(f"  Histórico: {n_registradas} señales registradas")
+    except Exception as e:  # el ledger nunca debe romper un scan
+        log(f"  Histórico: no se pudo registrar ({e})")
+
+    eliminados = cleanup_reportes_viejos()
+    if eliminados:
+        log(f"  Reportes antiguos eliminados: {eliminados}")
     guardar_reporte(resultado)
 
     elapsed = round(time.time() - start_time, 1)
@@ -970,6 +1149,7 @@ def _serializar_lista(lista):
             "sobre_sma200": c.get("sobre_sma200"),
             "golden_cross": c.get("golden_cross"),
             "volume_ratio": c.get("volume_ratio"),
+            "variacion_pct_1d": c.get("variacion_pct_1d"),
             "market_cap": c.get("market_cap"),
             "sector": c.get("sector", ""),
             "tradingview_rec": c.get("tradingview", {}).get("recommendation") if c.get("tradingview") else None,
@@ -984,6 +1164,8 @@ def _serializar_lista(lista):
             "nivel": cl.get("nivel"),
             "puntos": cl.get("puntos"),
             "max_posible": cl.get("max_posible"),
+            "max_disponible": cl.get("max_disponible"),
+            "margen": cl.get("margen"),
             "senales": cl.get("senales_labels", []),
         }
 

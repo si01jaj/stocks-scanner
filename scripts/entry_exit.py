@@ -35,6 +35,18 @@ if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 
 
+# ─── LÍMITES DE CORdura ─────────────────────────────────────────
+# Un ATR del 50% del precio no es un dato, es un error de datos: con esas
+# entradas el módulo generaba precios negativos (entrada conservadora -12,50
+# y stop -62,50 sobre una acción de 100). Estos límites lo hacen imposible.
+
+MAX_ATR_PCT = 0.15          # ATR > 15% del precio → dato no fiable
+FALLBACK_ATR_PCT = 0.02     # ATR por defecto: 2% del precio
+MAX_ENTRY_DEPTH_PCT = 0.15  # ninguna entrada a más del 15% por debajo del precio
+MAX_STOP_RISK_PCT = 0.20    # el stop nunca a más del 20% por debajo del precio
+MIN_ATR_SPACING_PCT = 0.01  # separación mínima entre niveles: 1% del precio
+
+
 def compute_entry_exit(current_price, technicals=None, score=5.0, risk_pct=2.0):
     """
     Compute 3 entry levels, 3 exit targets, and stop loss.
@@ -47,19 +59,45 @@ def compute_entry_exit(current_price, technicals=None, score=5.0, risk_pct=2.0):
         risk_pct: Max portfolio risk per trade (default 2%)
 
     Returns:
-        dict with entries, targets, stop_loss, risk_reward ratios
+        dict con entries, targets, stop_loss, risk_reward y:
+          - "operable": False si los niveles no son utilizables
+          - "warnings": lista de avisos sobre datos de entrada dudosos
     """
-    if current_price <= 0:
+    if current_price is None or current_price <= 0:
         raise ValueError("Current price must be positive")
 
     ta = technicals or {}
-    atr = ta.get("atr_14") or current_price * 0.02  # fallback: 2% of price
+    warnings = []
+
+    # ─── Validación del ATR ─────────────────────────────────────
+    atr_raw = ta.get("atr_14")
+    try:
+        atr_raw = float(atr_raw) if atr_raw is not None else None
+    except (TypeError, ValueError):
+        atr_raw = None
+
+    if atr_raw is None or atr_raw <= 0:
+        atr = current_price * FALLBACK_ATR_PCT
+        atr_reliable = False
+        warnings.append(
+            f"ATR ausente o no válido: se asume {FALLBACK_ATR_PCT:.0%} del precio"
+        )
+    elif atr_raw / current_price > MAX_ATR_PCT:
+        atr = current_price * FALLBACK_ATR_PCT
+        atr_reliable = False
+        warnings.append(
+            f"ATR {atr_raw:.2f} ({atr_raw / current_price:.0%} del precio) fuera de "
+            f"rango: se acota al {FALLBACK_ATR_PCT:.0%}"
+        )
+    else:
+        atr = atr_raw
+        atr_reliable = True
 
     # Gather all available price levels
     supports = _get_supports(ta, current_price)
     resistances = _get_resistances(ta, current_price)
-    fib = ta.get("fibonacci", {})
-    pivots = ta.get("pivot_points", {})
+    fib = ta.get("fibonacci", {}) or {}
+    pivots = ta.get("pivot_points", {}) or {}
     bb_lower = ta.get("bb_lower")
     bb_upper = ta.get("bb_upper")
 
@@ -78,9 +116,31 @@ def compute_entry_exit(current_price, technicals=None, score=5.0, risk_pct=2.0):
     # ─── POSITION SIZING ─────────────────────────────────────────
     position_sizes = _compute_position_sizes(entries, stop_loss, risk_pct)
 
+    # ─── Validación final ────────────────────────────────────────
+    problemas = []
+    if any(e <= 0 for e in entries):
+        problemas.append("alguna entrada es ≤ 0")
+    if any(t <= 0 for t in targets):
+        problemas.append("algún objetivo es ≤ 0")
+    if stop_loss is None or stop_loss <= 0:
+        problemas.append("stop loss ≤ 0")
+    if entries and targets and not (targets[0] > entries[0]):
+        problemas.append("el primer objetivo no está por encima de la primera entrada")
+    if stop_loss is not None and entries and not (stop_loss < entries[-1]):
+        problemas.append("el stop no está por debajo de la entrada conservadora")
+    if (current_price - stop_loss) / current_price > MAX_STOP_RISK_PCT + 1e-9 if stop_loss else False:
+        problemas.append("el riesgo del stop supera el límite")
+
+    operable = not problemas
+    if problemas:
+        warnings.extend(problemas)
+
     return {
         "current_price": current_price,
         "atr": round(atr, 2),
+        "atr_reliable": atr_reliable,
+        "operable": operable,
+        "warnings": warnings,
         "entries": {
             "aggressive": round(entries[0], 2),
             "moderate": round(entries[1], 2),
@@ -91,7 +151,7 @@ def compute_entry_exit(current_price, technicals=None, score=5.0, risk_pct=2.0):
             "target_2": round(targets[1], 2),
             "target_3": round(targets[2], 2),
         },
-        "stop_loss": round(stop_loss, 2),
+        "stop_loss": round(stop_loss, 2) if stop_loss is not None else None,
         "risk_reward": risk_reward,
         "position_sizes": position_sizes,
         "context": {
@@ -175,6 +235,18 @@ def _compute_entries(current_price, atr, supports, fib, pivots, bb_lower, score)
     # Final ordering: aggressive > moderate > conservative
     entries = sorted([e_aggr, e_mod, e_cons], reverse=True)
 
+    # Suelo de cordura: ninguna entrada a más del MAX_ENTRY_DEPTH_PCT por
+    # debajo del precio. Sin esto, un ATR desproporcionado empujaba la entrada
+    # conservadora por debajo de cero.
+    floor = current_price * (1 - MAX_ENTRY_DEPTH_PCT)
+    entries = [max(e, floor) for e in entries]
+
+    # Si el suelo ha aplanado los niveles, se reabren con separación mínima
+    gap = max(atr * 0.15, current_price * MIN_ATR_SPACING_PCT)
+    entries[2] = min(entries[2], entries[1] - gap)
+    entries[1] = min(entries[1], entries[0] - gap)
+    entries = sorted(entries, reverse=True)
+
     return entries
 
 
@@ -250,31 +322,33 @@ def _compute_targets(current_price, atr, resistances, fib, pivots, bb_upper, sco
 
 def _compute_stop_loss(current_price, atr, supports, entries):
     """
-    Compute stop loss below the conservative entry.
+    Stop por debajo de la entrada conservadora.
 
-    Uses the furthest support below conservative entry, or 1.5-2 ATR below it.
+    Orden de precedencia (importante): el tope de riesgo se aplica AL FINAL.
+    Antes se aplicaba primero (8% por debajo del precio) y después se forzaba
+    "al menos 1 ATR por debajo de la entrada conservadora", lo que anulaba el
+    tope: con precio 100 y ATR 10 el stop acababa en 67,50 (-32,5%).
     """
     conservative_entry = entries[-1] if entries else current_price * 0.95
 
     # Default: 1.5 ATR below conservative entry
     stop = conservative_entry - atr * 1.5
 
-    # If there's a support just below conservative entry, use it with a buffer
+    # Si hay un soporte justo por debajo, se coloca detrás de él
     deep_supports = [s for s in supports if s < conservative_entry - atr * 0.25]
     if deep_supports:
-        # Place stop just below the support (with ATR buffer)
         stop = min(stop, deep_supports[0] - atr * 0.25)
 
-    # Never more than 8% below current price (risk cap)
-    stop = max(stop, current_price * 0.92)
+    # 1) Tope de riesgo: manda sobre todo lo demás
+    floor = current_price * (1 - MAX_STOP_RISK_PCT)
+    stop = max(stop, floor)
 
-    # CRITICAL: ensure stop is at least 1 ATR below the conservative entry
-    # to avoid near-zero risk denominators that produce absurd R:R ratios
-    max_stop = conservative_entry - atr * 1.0
-    if stop > max_stop:
-        stop = max_stop
+    # 2) Separación mínima con la entrada conservadora, sin romper el tope
+    max_stop_by_entry = conservative_entry - max(atr * 0.25, current_price * MIN_ATR_SPACING_PCT)
+    if stop > max_stop_by_entry:
+        stop = max(max_stop_by_entry, floor)
 
-    return stop
+    return max(stop, 0.01)
 
 
 # ─── RISK/REWARD RATIOS ────────────────────────────────────────
@@ -282,6 +356,8 @@ def _compute_stop_loss(current_price, atr, supports, entries):
 def _compute_risk_reward(entries, targets, stop_loss):
     """Compute R:R ratio for each entry→target combination."""
     ratios = {}
+    if stop_loss is None:
+        return ratios
     entry_names = ["aggressive", "moderate", "conservative"]
     target_names = ["target_1", "target_2", "target_3"]
 
@@ -289,10 +365,10 @@ def _compute_risk_reward(entries, targets, stop_loss):
         for j, (t_name, target) in enumerate(zip(target_names, targets)):
             risk = entry - stop_loss
             reward = target - entry
-            if risk > 0:
+            if risk > 0 and reward > 0:
                 rr = round(min(reward / risk, 20.0), 2)  # cap at 20x
             else:
-                rr = 0
+                rr = 0.0
             ratios[f"{e_name}→{t_name}"] = {
                 "entry": round(entry, 2),
                 "target": round(target, 2),
@@ -300,7 +376,10 @@ def _compute_risk_reward(entries, targets, stop_loss):
                 "risk": round(risk, 2),
                 "reward": round(reward, 2),
                 "rr_ratio": rr,
-                "favorable": 2.0 <= rr <= 15.0,  # >15x is likely unrealistic
+                # Favorable = relación razonable Y riesgo real definido.
+                # Antes bastaba con superar 2:1 aunque el stop estuviera por
+                # encima de la entrada o el riesgo fuera negativo.
+                "favorable": bool(risk > 0 and reward > 0 and 2.0 <= rr <= 15.0),
             }
 
     return ratios
@@ -433,8 +512,17 @@ def format_entry_exit(result, ticker=""):
     lines.append(f"    Target 3:      ${t['target_3']:.2f}  (stretch goal)")
     lines.append("")
 
-    lines.append(f"  STOP LOSS:       ${result['stop_loss']:.2f}")
+    lines.append(f"  STOP LOSS:       ${result['stop_loss']:.2f}" if result.get('stop_loss') is not None
+                 else "  STOP LOSS:       no definido")
     lines.append("")
+
+    if not result.get("operable", True):
+        lines.append("  ⚠ NO OPERABLE: " + "; ".join(result.get("warnings", [])))
+        lines.append("")
+    elif result.get("warnings"):
+        for w in result["warnings"]:
+            lines.append(f"  ⚠ {w}")
+        lines.append("")
 
     # Best risk/reward combos
     lines.append("  RISK / REWARD")
