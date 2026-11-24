@@ -44,3 +44,24 @@ def test_run_devuelve_409_si_ya_hay_un_scan(monkeypatch):
 
 def test_job_desconocido_es_404():
     assert client.get("/api/run/no-existe").status_code == 404
+
+
+def test_favicon_ico_responde():
+    """El navegador pide /favicon.ico por convención aunque haya <link rel=icon>."""
+    r = client.get("/favicon.ico")
+    assert r.status_code == 200
+    assert "icon" in r.headers["content-type"]
+
+
+def test_favicon_svg_y_png_servidos():
+    svg = client.get("/static/favicon.svg")
+    assert svg.status_code == 200
+    assert "svg" in svg.headers["content-type"]
+    assert client.get("/static/favicon-32.png").status_code == 200
+
+
+def test_dashboard_declara_el_icono():
+    html = client.get("/").text
+    assert 'rel="icon"' in html
+    assert "/static/favicon.svg" in html
+    assert "theme-color" in html

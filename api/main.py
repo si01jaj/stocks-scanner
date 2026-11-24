@@ -22,7 +22,7 @@ from pathlib import Path
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
 
@@ -203,6 +203,18 @@ if os.path.exists(STATIC_DIR):
 
 
 # ─── HTML Routes ──────────────────────────────────────────────
+
+@app.get("/favicon.ico", include_in_schema=False)
+async def favicon():
+    """
+    Los navegadores piden /favicon.ico por convención, haya o no <link rel=icon>.
+    Sin esta ruta la pestaña se queda sin icono (o con el genérico).
+    """
+    ruta = os.path.join(STATIC_DIR, "favicon.ico")
+    if os.path.exists(ruta):
+        return FileResponse(ruta, media_type="image/x-icon")
+    return Response(status_code=204)
+
 
 @app.get("/", response_class=HTMLResponse)
 async def dashboard(request: Request):

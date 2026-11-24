@@ -4,6 +4,12 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>{% block title %}Stocks Scanner{% endblock %}</title>
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+  <link rel="icon" href="/static/favicon-32.png" sizes="32x32" type="image/png">
+  <link rel="shortcut icon" href="/static/favicon.ico">
+  <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
+  <meta name="theme-color" content="#0f172a">
+  <meta name="description" content="Escáner de acciones: clasificación técnica con desglose de señales e histórico de resultados.">
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
   <script>
@@ -32,7 +38,7 @@
       <div class="flex items-center justify-between h-16">
         <div class="flex items-center gap-3">
           <a href="/" class="flex items-center gap-2">
-            <span class="text-2xl">📊</span>
+            <img src="/static/favicon.svg" alt="" width="28" height="28" class="rounded-md">
             <span class="font-bold text-xl text-gray-900">Stocks Scanner</span>
           </a>
         </div>
