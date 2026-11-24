@@ -11,9 +11,12 @@ Endpoints JSON:
   GET  /api/reports/{fecha} Reporte de una fecha específica
   GET  /api/ticker/{symbol} Datos históricos de un ticker
   GET  /api/status          Estado del sistema
-  POST /api/run             Ejecutar el screener
+  GET  /api/history         Histórico de señales y acierto por horizonte
+  POST /api/run             Lanzar el screener en segundo plano → job_id
+  GET  /api/run/{job_id}    Estado del escaneo
 """
-import os, sys, json, glob, asyncio, time
+import os, sys, json, glob, asyncio, time, threading, uuid
+from collections import deque
 from datetime import datetime, date, timedelta
 from pathlib import Path
 from contextlib import asynccontextmanager
@@ -28,6 +31,18 @@ if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 
 REPORTS_DIR = os.path.join(_project_root, "data", "reports")
+
+# Token opcional: si SCANNER_API_TOKEN está definido, POST /api/run lo exige.
+# Con la variable vacía el endpoint queda abierto, como antes, pero el puerto
+# está publicado sólo en loopback (ver docker-compose.yml).
+API_TOKEN = os.environ.get("SCANNER_API_TOKEN", "").strip()
+
+# ─── Estado de ejecuciones ────────────────────────────────────
+# Un sólo escaneo a la vez: dos scans concurrentes escribían en el mismo
+# data/reports/ y en el mismo ledger.
+_scan_lock = threading.Lock()
+_jobs = {}
+_jobs_order = deque(maxlen=20)
 
 
 # ─── Helpers ─────────────────────────────────────────────────
@@ -137,6 +152,36 @@ def _run_screener_sync():
     sys.path.insert(0, _project_root)
     from scripts.run_screener import ejecutar_screener
     return ejecutar_screener(verbose=False)
+
+
+def _run_job(job_id):
+    """Ejecuta el scan en un worker y deja el resultado en el estado del job."""
+    job = _jobs.setdefault(job_id, {})
+    try:
+        resultado = _run_screener_sync()
+        if resultado:
+            job.update(
+                status="ok",
+                finished=datetime.now().isoformat(timespec="seconds"),
+                report={
+                    "fecha": resultado.get("fecha"),
+                    "alcistas": resultado.get("alcistas", []),
+                    "bajistas": resultado.get("bajistas", []),
+                    "candidatos_brutos": resultado.get("candidatos_brutos", 0),
+                    "stats": resultado.get("stats", {}),
+                },
+            )
+        else:
+            job.update(status="error", error="No se pudieron obtener datos",
+                       finished=datetime.now().isoformat(timespec="seconds"))
+    except Exception as e:
+        job.update(status="error", error=str(e),
+                   finished=datetime.now().isoformat(timespec="seconds"))
+    finally:
+        try:
+            _scan_lock.release()
+        except RuntimeError:
+            pass
 
 
 # ─── App Setup ────────────────────────────────────────────────
@@ -262,31 +307,60 @@ async def api_status():
     }
 
 
-@app.post("/api/run")
-async def api_run_screener():
+@app.get("/api/history")
+async def api_history():
     """
-    Execute the screener in a background thread.
-    Returns immediately with a task ID, result available via /api/status.
+    Histórico persistente de señales y su resultado posterior.
+
+    Es la pieza que faltaba para poder decir si el scoring acierta: hit-rate,
+    retorno medio y MFE/MAE por tipo y horizonte (5/20/60 sesiones).
     """
     try:
-        loop = asyncio.get_event_loop()
-        result = await loop.run_in_executor(None, _run_screener_sync)
-        if result:
-            return {
-                "status": "ok",
-                "message": "Scan completado",
-                "report": {
-                    "fecha": result.get("fecha"),
-                    "alcistas": result.get("alcistas", []),
-                    "bajistas": result.get("bajistas", []),
-                    "candidatos_brutos": result.get("candidatos_brutos", 0),
-                    "stats": result.get("stats", {}),
-                },
-            }
-        else:
-            return JSONResponse({"status": "error", "error": "No se pudieron obtener datos"}, status_code=500)
+        from scripts.signals_ledger import diagnostico, stats
+        return {"diagnostico": diagnostico(), "stats": stats()}
     except Exception as e:
-        return JSONResponse({"status": "error", "error": str(e)}, status_code=500)
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.post("/api/run", status_code=202)
+async def api_run_screener(request: Request):
+    """
+    Lanza el screener en segundo plano y devuelve un job_id al instante.
+
+    Antes la petición esperaba los minutos que duraba el scan (el docstring
+    prometía "returns immediately with a task ID" pero no era cierto) y no
+    había nada que impidiera dos escaneos simultáneos.
+    """
+    if API_TOKEN and request.headers.get("x-api-token") != API_TOKEN:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+
+    if not _scan_lock.acquire(blocking=False):
+        return JSONResponse(
+            {"status": "already_running", "error": "Ya hay un escaneo en curso"},
+            status_code=409,
+        )
+
+    job_id = uuid.uuid4().hex[:12]
+    _jobs[job_id] = {
+        "job_id": job_id,
+        "status": "running",
+        "started": datetime.now().isoformat(timespec="seconds"),
+    }
+    _jobs_order.append(job_id)
+
+    loop = asyncio.get_running_loop()
+    loop.run_in_executor(None, _run_job, job_id)
+
+    return {"job_id": job_id, "status": "running", "poll": f"/api/run/{job_id}"}
+
+
+@app.get("/api/run/{job_id}")
+async def api_run_status(job_id: str):
+    """Estado de un escaneo lanzado con POST /api/run."""
+    job = _jobs.get(job_id)
+    if not job:
+        return JSONResponse({"error": f"job no encontrado: {job_id}"}, status_code=404)
+    return job
 
 
 # ─── Main ─────────────────────────────────────────────────────

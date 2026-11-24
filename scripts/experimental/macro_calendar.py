@@ -28,7 +28,7 @@ Usage:
 import os, sys
 from datetime import datetime, date, timedelta
 
-_project_root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
+_project_root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..")
 if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 
@@ -246,9 +246,12 @@ def _fetch_finnhub_calendar(days_ahead=14):
     """Fetch economic calendar from Finnhub (free tier)."""
     events = []
     try:
-        from scripts.api_config import load_config
-        config = load_config()
-        key = config.get("api_keys", {}).get("finnhub")
+        from scripts.api_config import get_api_key, is_api_available
+        # El esquema real del fichero es config["finnhub"]["key"], no
+        # config["api_keys"]["finnhub"]: el calendario nunca leía la clave.
+        if not is_api_available("finnhub"):
+            return events
+        key = get_api_key("finnhub")
         if not key:
             return events
 

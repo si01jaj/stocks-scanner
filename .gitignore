@@ -8,11 +8,18 @@ venv/
 # Data & logs
 data/reports/*.json
 data/.cache/
+data/*.db
+data/*.db-shm
+data/*.db-wal
 logs/*.jsonl
 logs/*.json
 
 # Config (contains API keys)
 config/api_keys.json
+config/api_keys.json.corrupt-*
+
+# Tests
+.pytest_cache/
 
 # IDE
 .vscode/
