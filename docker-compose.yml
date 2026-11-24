@@ -5,7 +5,7 @@ services:
     build: .
     container_name: stocks-scanner
     ports:
-      # Loopback: el proyecto no tiene ninguna autenticación, así que no debe
+      # Loopback: el proyecto no tiene autenticación propia, así que no debe
       # quedar alcanzable desde internet. La entrada va por cloudflared/traefik.
       - "127.0.0.1:8030:8080"
     volumes:
@@ -14,4 +14,8 @@ services:
       - ./config/api_keys.json:/app/config/api_keys.json:ro
     environment:
       - TZ=America/New_York
+      # Retención de reportes en días (antes eran 5 ficheros fijos)
+      - SCANNER_RETENTION_DAYS=30
+      # Token opcional para POST /api/run. Vacío = sin token (sólo loopback).
+      - SCANNER_API_TOKEN=${SCANNER_API_TOKEN:-}
     restart: unless-stopped

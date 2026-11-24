@@ -15,7 +15,7 @@ Usage:
 import os, sys, json
 from datetime import datetime, timedelta
 
-_project_root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
+_project_root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..")
 if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 
