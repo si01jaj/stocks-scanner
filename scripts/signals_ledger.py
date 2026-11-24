@@ -46,8 +46,9 @@ CREATE TABLE IF NOT EXISTS signals (
     ticker          TEXT NOT NULL,
     tipo            TEXT NOT NULL,           -- ALCISTA | BAJISTA
     nivel           TEXT,
-    puntos          INTEGER,
-    max_posible     INTEGER,
+    puntos         INTEGER,
+    max_posible     INTEGER,                 -- techo teórico del modelo (17)
+    max_disponible  INTEGER,                 -- techo evaluable con los datos del candidato
     margen          INTEGER,
     score           REAL,
     precio          REAL,                    -- precio de referencia al publicar
@@ -89,7 +90,21 @@ def connect(db_path=None):
 def init_db(db_path=None):
     with connect(db_path) as conn:
         conn.executescript(SCHEMA)
+        _migrate(conn)
     return db_path or DB_PATH
+
+
+def _migrate(conn):
+    """
+    Migraciones incrementales sobre una BD ya existente.
+
+    `max_disponible` se añadió después: sin él no se puede normalizar
+    7/10 frente a 7/12, y el histórico de señales viejas quedaría sin
+    denominador comparable.
+    """
+    columnas = {r["name"] for r in conn.execute("PRAGMA table_info(signals)")}
+    if "max_disponible" not in columnas:
+        conn.execute("ALTER TABLE signals ADD COLUMN max_disponible INTEGER")
 
 
 # ─── Ingesta ───────────────────────────────────────────────────────
@@ -122,12 +137,13 @@ def record_scan(resultado, db_path=None):
                 conn.execute(
                     """
                     INSERT INTO signals (scan_date, scan_day, ticker, tipo, nivel,
-                                         puntos, max_posible, margen, score, precio,
-                                         rsi, senales)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                         puntos, max_posible, max_disponible, margen,
+                                         score, precio, rsi, senales)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(scan_day, ticker) DO UPDATE SET
                         tipo=excluded.tipo, nivel=excluded.nivel,
                         puntos=excluded.puntos, max_posible=excluded.max_posible,
+                        max_disponible=excluded.max_disponible,
                         margen=excluded.margen, score=excluded.score,
                         precio=excluded.precio, rsi=excluded.rsi,
                         senales=excluded.senales
@@ -135,8 +151,9 @@ def record_scan(resultado, db_path=None):
                     (
                         scan_date, scan_day, c.get("ticker").upper(), cl.get("tipo"),
                         cl.get("nivel"), cl.get("puntos"), cl.get("max_posible"),
-                        cl.get("margen"), c.get("score"), c.get("precio"),
-                        c.get("rsi"), json.dumps(cl.get("senales", []), ensure_ascii=False),
+                        cl.get("max_disponible"), cl.get("margen"), c.get("score"),
+                        c.get("precio"), c.get("rsi"),
+                        json.dumps(cl.get("senales", []), ensure_ascii=False),
                     ),
                 )
                 escritas += 1
@@ -281,7 +298,8 @@ def stats(db_path=None, horizons=HORIZONS):
             for horizon in horizons:
                 rows = conn.execute(
                     """
-                    SELECT s.tipo, o.ret_pct, o.max_favorable_pct, o.max_adverse_pct
+                    SELECT s.tipo, s.puntos, s.max_disponible,
+                           o.ret_pct, o.max_favorable_pct, o.max_adverse_pct
                     FROM outcomes o JOIN signals s ON s.id = o.signal_id
                     WHERE s.tipo = ? AND o.horizon = ?
                     """,
@@ -291,6 +309,12 @@ def stats(db_path=None, horizons=HORIZONS):
                     continue
                 rets = [r["ret_pct"] for r in rows]
                 aciertos = sum(1 for r in rets if (r > 0) == (tipo == "ALCISTA"))
+                ratios = [
+                    r["puntos"] / r["max_disponible"] * 100
+                    for r in rows
+                    if r["puntos"] is not None and r["max_disponible"]
+                ]
+                puntos = [r["puntos"] for r in rows if r["puntos"] is not None]
                 salida[f"{tipo}@{horizon}"] = {
                     "n": len(rets),
                     "hit_rate": round(aciertos / len(rets) * 100, 1),
@@ -298,6 +322,9 @@ def stats(db_path=None, horizons=HORIZONS):
                     "ret_mediano": round(statistics.median(rets), 2),
                     "mfe_medio": round(statistics.fmean(r["max_favorable_pct"] for r in rows), 2),
                     "mae_medio": round(statistics.fmean(r["max_adverse_pct"] for r in rows), 2),
+                    # Normalizado por el techo evaluable de cada candidato
+                    "puntos_medio": round(statistics.fmean(puntos), 1) if puntos else None,
+                    "ratio_medio": round(statistics.fmean(ratios), 1) if ratios else None,
                 }
     return salida
 
@@ -357,10 +384,13 @@ def _main(argv):
         if not res:
             print("Sin resultados todavía: ejecuta `update` cuando venzan los horizontes.")
             return 0
-        print(f"{'grupo':<14} {'n':>4} {'hit%':>7} {'medio%':>8} {'mediano%':>9} {'MFE%':>7} {'MAE%':>7}")
+        print(f"{'grupo':<14} {'n':>4} {'hit%':>7} {'medio%':>8} {'mediano%':>9} "
+              f"{'MFE%':>7} {'MAE%':>7} {'pts':>5} {'ratio%':>7}")
         for k, v in sorted(res.items()):
             print(f"{k:<14} {v['n']:>4} {v['hit_rate']:>7} {v['ret_medio']:>8} "
-                  f"{v['ret_mediano']:>9} {v['mfe_medio']:>7} {v['mae_medio']:>7}")
+                  f"{v['ret_mediano']:>9} {v['mfe_medio']:>7} {v['mae_medio']:>7} "
+                  f"{v['puntos_medio'] if v['puntos_medio'] is not None else '—':>5} "
+                  f"{v['ratio_medio'] if v['ratio_medio'] is not None else '—':>7}")
         return 0
 
     print(f"Comando desconocido: {cmd}")

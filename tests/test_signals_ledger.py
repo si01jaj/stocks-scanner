@@ -19,7 +19,8 @@ def _reporte(scan_date="2026-01-01T10:00:00", precio=100.0):
             "score": 7.5,
             "rsi": 55.0,
             "clasificacion": {"tipo": "ALCISTA", "nivel": "ALCISTA", "puntos": 9,
-                              "max_posible": 17, "margen": 9, "senales": ["Precio > SMA50"]},
+                              "max_posible": 17, "max_disponible": 12, "margen": 9,
+                              "senales": ["Precio > SMA50"]},
         }],
         "bajistas": [{
             "ticker": "BBB",
@@ -27,7 +28,8 @@ def _reporte(scan_date="2026-01-01T10:00:00", precio=100.0):
             "score": 3.0,
             "rsi": 70.0,
             "clasificacion": {"tipo": "BAJISTA", "nivel": "BAJISTA", "puntos": 10,
-                              "max_posible": 17, "margen": 10, "senales": ["RSI > 65"]},
+                              "max_posible": 17, "max_disponible": 12, "margen": 10,
+                              "senales": ["RSI > 65"]},
         }],
     }
 
@@ -134,6 +136,45 @@ def test_proveedor_caido_no_rompe(tmp_path):
     assert len(res["errores"]) == 2
 
 
+def test_guarda_el_techo_evaluable(tmp_path):
+    """Sin max_disponible no se puede normalizar 7/10 frente a 7/12."""
+    db = _db(tmp_path)
+    record_scan(_reporte(), db_path=db)
+    from scripts.signals_ledger import connect
+    with connect(db) as conn:
+        fila = conn.execute(
+            "SELECT puntos, max_posible, max_disponible FROM signals WHERE ticker = 'AAA'"
+        ).fetchone()
+    assert fila["puntos"] == 9
+    assert fila["max_posible"] == 17
+    assert fila["max_disponible"] == 12
+
+
+def test_migra_una_bd_creada_antes_de_la_columna(tmp_path):
+    import sqlite3
+
+    db = _db(tmp_path)
+    c = sqlite3.connect(db)
+    c.executescript("""
+        CREATE TABLE signals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, scan_date TEXT NOT NULL,
+            scan_day TEXT NOT NULL, ticker TEXT NOT NULL, tipo TEXT NOT NULL,
+            nivel TEXT, puntos INTEGER, max_posible INTEGER, margen INTEGER,
+            score REAL, precio REAL, rsi REAL, senales TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP, UNIQUE(scan_day, ticker));
+    """)
+    c.commit()
+    c.close()
+
+    assert record_scan(_reporte(), db_path=db) == 2   # init_db migra y escribe
+
+    from scripts.signals_ledger import connect
+    with connect(db) as conn:
+        assert conn.execute(
+            "SELECT max_disponible FROM signals WHERE ticker = 'AAA'"
+        ).fetchone()["max_disponible"] == 12
+
+
 def test_stats_calcula_hit_rate(tmp_path):
     db = _db(tmp_path)
     record_scan(_reporte(), db_path=db)
@@ -146,3 +187,6 @@ def test_stats_calcula_hit_rate(tmp_path):
     # El bajista acierta si el precio cae: 41 / 50
     assert res["BAJISTA@3"]["hit_rate"] == 100.0
     assert res["BAJISTA@3"]["ret_medio"] == pytest.approx(-14.0)   # 43 / 50
+    # Normalizado por el techo evaluable: 9/12 y 10/12
+    assert res["ALCISTA@3"]["ratio_medio"] == pytest.approx(75.0)
+    assert res["BAJISTA@3"]["ratio_medio"] == pytest.approx(83.3, abs=0.1)

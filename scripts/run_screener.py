@@ -1051,7 +1051,7 @@ def ejecutar_screener(tickers_especificos=None, verbose=True):
         time.sleep(0.3)
 
     log(f"\n  Total evaluados: {len(lista)}")
-    log(f"  Pasaron filtro: {len(candidatos)}")
+    log(f"  Clasificados: {len(candidatos)}")
 
     # ─── Fase 3: Separar alcistas y bajistas ──────────────────
     log(f"\nFASE 3: Clasificando...\n")
