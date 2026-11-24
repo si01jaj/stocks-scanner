@@ -1,0 +1,3 @@
+# Dependencias sólo para tests y desarrollo.
+pytest>=7.4,<9
+httpx>=0.25,<1

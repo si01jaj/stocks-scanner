@@ -6,6 +6,7 @@ Usage:
     from scripts.api_config import load_config, get_api_key, get_rate_limit, list_apis
 """
 import json, os, sys
+from datetime import datetime
 from pathlib import Path
 
 _project_root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
@@ -206,16 +207,30 @@ def ensure_dirs():
     os.makedirs(LOGS_DIR, exist_ok=True)
 
 
-def init_config():
-    """Initialize a config file with template placeholders. Does NOT overwrite existing."""
+def _read_config_file():
+    """Lee el JSON de configuración. Propaga JSONDecodeError si está corrupto."""
+    with open(DEFAULT_CONFIG_PATH, "r") as f:
+        return json.load(f)
+
+
+def init_config(force=False):
+    """
+    Initialize a config file with template placeholders. Does NOT overwrite
+    an existing file unless `force=True`.
+
+    Antes, si el fichero existía, esta función llamaba a load_config(), que
+    al encontrar JSON inválido volvía a llamar a init_config(): recursión
+    infinita (RecursionError) ante una config corrupta.
+    """
     ensure_dirs()
-    if os.path.exists(DEFAULT_CONFIG_PATH):
-        print(f"Config already exists: {DEFAULT_CONFIG_PATH}")
-        return load_config()
+    if os.path.exists(DEFAULT_CONFIG_PATH) and not force:
+        try:
+            return _read_config_file()
+        except (json.JSONDecodeError, ValueError):
+            return {}
     config = {}
     for api_id, meta in API_REGISTRY.items():
         config[api_id] = {"key": None, "enabled": not meta.get("requires_key", False)}
-    os.makedirs(os.path.dirname(DEFAULT_CONFIG_PATH), exist_ok=True)
     with open(DEFAULT_CONFIG_PATH, "w") as f:
         json.dump(config, f, indent=2)
     print(f"Config initialized: {DEFAULT_CONFIG_PATH}")
@@ -224,14 +239,27 @@ def init_config():
 
 
 def load_config():
-    """Load API config from disk. Creates default if missing."""
+    """
+    Load API config from disk. Creates default if missing.
+
+    Si el JSON está corrupto NO se sobrescribe a ciegas: se renombra a
+    `.corrupt-<timestamp>` (por si había claves dentro) y se regenera.
+    """
     if not os.path.exists(DEFAULT_CONFIG_PATH):
         return init_config()
     try:
-        with open(DEFAULT_CONFIG_PATH, "r") as f:
-            return json.load(f)
-    except (json.JSONDecodeError, FileNotFoundError):
-        return init_config()
+        return _read_config_file()
+    except (json.JSONDecodeError, ValueError):
+        backup = f"{DEFAULT_CONFIG_PATH}.corrupt-{datetime.now().strftime('%Y%m%dT%H%M%S')}"
+        try:
+            os.replace(DEFAULT_CONFIG_PATH, backup)
+            print(
+                f"AVISO: {DEFAULT_CONFIG_PATH} no era JSON válido. "
+                f"Se ha movido a {backup} y se ha regenerado la configuración."
+            )
+        except OSError:
+            print(f"AVISO: {DEFAULT_CONFIG_PATH} no era JSON válido y no se pudo respaldar.")
+        return init_config(force=True)
 
 
 def save_config(config):
@@ -242,23 +270,36 @@ def save_config(config):
 
 
 def get_api_key(api_id, config=None):
-    """Get an API key from config or environment variable."""
+    """
+    Get an API key from config or environment variable.
+
+    Devuelve None (no cadena vacía) cuando no hay clave: un "" se colaba en
+    comprobaciones del tipo `if key is None` y acababa en peticiones sin token.
+    """
     if config is None:
         config = load_config()
     entry = config.get(api_id, {})
     key = entry.get("key") if isinstance(entry, dict) else None
-    if key:
+    if key and str(key).strip():
         return key
     env_var = API_REGISTRY.get(api_id, {}).get("key_env_var", "")
     if env_var:
-        return os.environ.get(env_var, "")
+        return os.environ.get(env_var) or None
     return None
 
 
 def is_api_available(api_id, config=None):
-    """Check if an API is available (key present or no key needed)."""
+    """
+    Check if an API is available (enabled + key present or no key needed).
+
+    El campo `enabled` del fichero de configuración se ignoraba: una API
+    deshabilitada con clave seguía considerándose disponible.
+    """
     if config is None:
         config = load_config()
+    entry = config.get(api_id, {})
+    if isinstance(entry, dict) and entry.get("enabled") is False:
+        return False
     meta = API_REGISTRY.get(api_id, {})
     if not meta.get("requires_key", True):
         return True
